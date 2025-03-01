@@ -5,17 +5,15 @@
 #include <stdlib.h>
 #include <oqs/oqs.h>
 #include <unistd.h>
-
 #include <string.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
-// Requests
 #include "kms/kms.h"
 #include "onion/onion.h"
 
-#define NUM_WORKERS 5
-#define NUM_EXEC 20
+#define NUM_WORKERS 3 
+#define NUM_EXEC 100
 
 char *key_db_name = "key_distribution.csv";
 char *enc_db_name = "encryption_time.csv";
@@ -40,14 +38,6 @@ typedef struct {
 } WorkerData;
 
 WorkerData workers[NUM_WORKERS];
-
-void print_array_hex(const char *label, uint8_t *array, size_t length) {
-    printf("%s: ", label);
-    for (size_t i = 0; i < length; i++) {
-        printf("%02X ", array[i]);
-    }
-    printf("\n");
-}
 
 void *worker_thread(void *arg) {
     WorkerData *worker = (WorkerData *)arg;
@@ -76,7 +66,6 @@ void *worker_thread(void *arg) {
     worker->ready = 0;
 
     // Read QKD Key from ID from the KMS
-    // printf("[NODE %i] - QKD_ID: %s\n",worker->id,worker->qkd_id);
     snprintf(url, sizeof(url), "%s/api/v1/keys/%s/dec_keys", KMSS_IP, C1_ENC);
     char post_data[512];
     snprintf(post_data, sizeof(post_data), "{\"key_IDs\":[{\"key_ID\":\"%s\"}]}", worker->qkd_id);
@@ -99,7 +88,6 @@ void *worker_thread(void *arg) {
     next_qkd_id = malloc(QKD_KEY_ID);
     next_qkd_iv = malloc(IV_SIZE);
 
-    // Preparamos info para el próximo nodo
     if(worker->id < NUM_WORKERS-1){        
 
         snprintf(url, sizeof(url), "%s/api/v1/keys/%s/enc_keys", KMSM_IP, C2_ENC);
@@ -114,12 +102,10 @@ void *worker_thread(void *arg) {
             workers[worker->id+1].qkd_iv = next_qkd_iv;
             free(response);
         }
-        // printf("[NODE %i]: Cediendo paso a nodo %i\n",worker->id,worker->id+1);
         workers[worker->id+1].ready = 1;
         pthread_cond_signal(&workers[worker->id+1].cond);
         pthread_mutex_unlock(&workers[worker->id+1].mutex);
     } else {
-        // printf("[NODE %i]: Cediendo paso a main\n",worker->id);
         worker->finished = 1;
         pthread_cond_signal(&worker->cond);
         pthread_mutex_unlock(&worker->mutex);
@@ -131,9 +117,7 @@ void *worker_thread(void *arg) {
     }
     worker->ready = 0;
 
-/////////////////////////////////////////////////////////////////
     uint8_t temp[1024];
-    uint8_t temp2[1024];
 
     int decrypted_len = decrypt(worker->onion, worker->onion_len, qkd_key, 
         temp, worker->qkd_iv);
@@ -155,7 +139,6 @@ void *worker_thread(void *arg) {
     memmove(worker->onion, worker->onion + ID_SIZE, worker->onion_len - ID_SIZE);
     worker->onion_len -= ID_SIZE;
 
-    // Preparamos info para el próximo nodo
     if(worker->id < NUM_WORKERS-1){
         uint8_t ciphertext[1024];
         int ciph_len = encrypt(worker->onion, worker->onion_len, next_qkd_key, ciphertext, next_qkd_iv);
@@ -164,7 +147,6 @@ void *worker_thread(void *arg) {
             return NULL;
         }
         
-        // printf("[NODE %i]: Cediendo paso a nodo %i\n",worker->id,worker->id+1);
         workers[worker->id+1].onion = ciphertext; 
         workers[worker->id+1].onion_len = ciph_len; 
         workers[worker->id+1].ready = 1;
@@ -177,7 +159,6 @@ void *worker_thread(void *arg) {
         printf("[NODE %i] - ",worker->id);
         print_array_hex("SECRET", worker->onion, worker->onion_len);
     }
-/////////////////////////////////////////////////////////////////
 
     return NULL;
 }
@@ -186,15 +167,14 @@ void *main_thread(void *arg) {
     uint8_t *shared_secrets[NUM_WORKERS];
     uint8_t public_key[OQS_KEM_kyber_768_length_public_key];
     uint8_t secret_key[OQS_KEM_kyber_768_length_secret_key];
-    OQS_STATUS rc = OQS_KEM_kyber_768_keypair(public_key, secret_key);
+    OQS_KEM_kyber_768_keypair(public_key, secret_key);
 
     for (int i = 0; i < NUM_WORKERS; i++) {
         pthread_mutex_lock(&workers[i].mutex);
         workers[i].public_key = public_key;
-        // Asignar memoria para ciphertext
         workers[i].ciphertext = malloc(OQS_KEM_kyber_768_length_ciphertext);
         if (workers[i].ciphertext == NULL) {
-            perror("Error al asignar memoria para ciphertext");
+            perror("Error when allocating memory for ciphertext");
             exit(EXIT_FAILURE);
         }
         workers[i].ready = 1;
@@ -225,15 +205,12 @@ void *main_thread(void *arg) {
 
     qkd_key = malloc(KEY_SIZE);
     qkd_iv = malloc(IV_SIZE);
-    //qkd_id = malloc(QKD_KEY_ID);
 
     snprintf(url, sizeof(url), "%s/api/v1/keys/%s/enc_keys", KMSM_IP, C2_ENC);
     response = request_https(url, C1_PUB_KEY, C1_PRIV_KEY, C1_ROOT_CA, NULL);
     if (response) {
         extract_key8_and_id(response, qkd_key, KEY_SIZE, qkd_id, QKD_KEY_ID);
         RAND_bytes(qkd_iv, IV_SIZE);
-        // print_array_hex("[ MAIN ] - QKDKEY",qkd_key,KEY_SIZE);
-        // printf("[ MAIN ] - QKD_ID: %s\n", qkd_id);
         workers[0].qkd_id = qkd_id;
         workers[0].qkd_iv = qkd_iv;
         free(response);
@@ -257,9 +234,7 @@ void *main_thread(void *arg) {
 
     uint8_t secret[KEY_SIZE];
     uint8_t iv_secret[IV_SIZE];
-    uint8_t ivs_onion[NUM_WORKERS][IV_SIZE];    // IVs para cada capa
-    uint8_t *onions[NUM_WORKERS];
-    int onions_len[NUM_WORKERS];
+    uint8_t ivs_onion[NUM_WORKERS][IV_SIZE];
     uint8_t **ids = malloc(NUM_WORKERS * sizeof(uint8_t *));
     for (int i = 0; i < NUM_WORKERS; i++) {
         ids[i] = malloc(ID_SIZE);
@@ -273,27 +248,20 @@ void *main_thread(void *arg) {
     print_array_hex("[ MAIN ] - SECRET",secret,KEY_SIZE);
 
     // Onion Routing: cifrar en capas desde la última hasta la primera
-
     enc_init_time = clock();
 
     uint8_t buffer[1024];
-    //int buffer_len = strlen(secret);
     int buffer_len = KEY_SIZE;
-    int id_len;
     memcpy(buffer, secret, buffer_len);
 
     for (int i = NUM_WORKERS - 1; i >= 0; i--) {
         uint8_t temp[1024];
-        //id_len = strlen((char *)ids[i]);
 
-        // Concatenamos el ID antes del mensaje cifrado
+        // Concatenate the ID before the encrypted message
         memcpy(temp, ids[i], ID_SIZE);
         memcpy(temp + ID_SIZE, buffer, buffer_len);
-        //print_array_hex("Encripted message", buffer, buffer_len);
-        //printf("buffer len %i\n\n",buffer_len);
 
         buffer_len = encrypt(temp, ID_SIZE + buffer_len, shared_secrets[i], buffer, ivs_onion[i]);
-        //printf("[ MAIN ] - BUFFER_LEN %i: %i\n",i,buffer_len);
     }
 
     buffer_len = encrypt(buffer, buffer_len, qkd_key, buffer, qkd_iv);
@@ -335,7 +303,6 @@ int main() {
     FILE *enc_db;
     int first_exec = 1;
 
-    // Abrir db para añadir o crear si no existe
     key_db = fopen(key_db_name, "w");
     enc_db = fopen(enc_db_name, "w");
     if (key_db == NULL) {

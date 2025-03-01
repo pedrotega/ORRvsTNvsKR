@@ -4,18 +4,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <time.h>
 #include <string.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
-// Requests
 #include <oqs/oqs.h>
 #include "kms/kms.h"
 #include "onion/onion.h"
 
-#define NUM_WORKERS 3
-#define NUM_EXEC 20
+#define NUM_WORKERS 4
+#define NUM_EXEC 100
 
 char *key_db_name = "key_distribution.csv";
 char *enc_db_name = "encryption_time.csv";
@@ -38,21 +36,6 @@ pthread_mutex_t main_mutex;
 pthread_cond_t main_cond;
 int main_ready = 0;
 
-void print_array_hex(const char *label, uint8_t *array, size_t length) {
-    printf("%s: ", label);
-    for (size_t i = 0; i < length; i++) {
-        printf("%02X ", array[i]);
-    }
-    printf("\n");
-}
-
-// Función para cifrado/descifrado XOR
-void xor_encrypt_decrypt(const uint8_t *input, int input_len, const uint8_t *key, uint8_t *output) {
-    for (int i = 0; i < input_len; i++) {
-        output[i] = input[i] ^ key[i % KEY_SIZE];
-    }
-}
-
 void *worker_thread(void *arg) {
     WorkerData *worker = (WorkerData *)arg;
     uint8_t qkd_key[KEY_SIZE];
@@ -61,7 +44,6 @@ void *worker_thread(void *arg) {
     char url[256];
     char *response;
     char qkd_id[256] = {0};
-    uint8_t msg_tn[KEY_SIZE];
 
     next_qkd_id = malloc(QKD_KEY_ID);
     
@@ -74,8 +56,7 @@ void *worker_thread(void *arg) {
     }
     worker->ready = 0;
     
-    // Process data in sequential phase
-    
+    // Process data in sequential phase    
     // Unlock the next worker in the chain (or main if this is the last worker)
     if (worker->id == 0) {
         // Read QKD Key from the KMS (To be shared with the next node)
@@ -186,13 +167,8 @@ void *worker_thread(void *arg) {
 }
 
 void *main_thread(void *arg) {
-    uint8_t qkd_key[KEY_SIZE];
-    char url[256];
-    char *response;
-    char qkd_id[256] = {0};
 
-    // Phase 1: Sequential communication
-    
+    // Phase 1: Sequential communication    
     // Lock main mutex to wait for phase 1 completion
     pthread_mutex_lock(&main_mutex);
     
@@ -210,7 +186,6 @@ void *main_thread(void *arg) {
     main_ready = 0;
     
     // Phase 2: Concurrent communication
-
     key_init_time = clock();
 
     for (int i = 0; i < NUM_WORKERS; i++) {
@@ -272,7 +247,7 @@ int main() {
     FILE *enc_db;
     int first_exec = 1;
 
-    // Abrir db para añadir o crear si no existe
+    // Open DataBase to add or create a new one
     key_db = fopen(key_db_name, "w");
     enc_db = fopen(enc_db_name, "w");
     if (key_db == NULL) {

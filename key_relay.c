@@ -4,18 +4,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <time.h>
 #include <string.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
-// Requests
 #include <oqs/oqs.h>
 #include "kms/kms.h"
 #include "onion/onion.h"
 
-#define NUM_WORKERS 11
-#define NUM_EXEC 20
+#define NUM_WORKERS 3
+#define NUM_EXEC 100
 
 char *key_db_name = "key_distribution.csv";
 char *enc_db_name = "encryption_time.csv";
@@ -34,21 +32,6 @@ typedef struct {
 } WorkerData;
 
 WorkerData workers[NUM_WORKERS];
-
-void print_array_hex(const char *label, uint8_t *array, size_t length) {
-    printf("%s: ", label);
-    for (size_t i = 0; i < length; i++) {
-        printf("%02X ", array[i]);
-    }
-    printf("\n");
-}
-
-// Función para cifrado/descifrado XOR
-void xor_encrypt_decrypt(const uint8_t *input, int input_len, const uint8_t *key, uint8_t *output) {
-    for (int i = 0; i < input_len; i++) {
-        output[i] = input[i] ^ key[i % KEY_SIZE];
-    }
-}
 
 void *worker_thread(void *arg) {
     WorkerData *worker = (WorkerData *)arg;
@@ -79,8 +62,6 @@ void *worker_thread(void *arg) {
     }
 
     // Read QKD Key from the KMS
-
-    // Preparamos info para el próximo nodo
     if(worker->id < NUM_WORKERS-1){        
 
         snprintf(url, sizeof(url), "%s/api/v1/keys/%s/enc_keys", KMSM_IP, C2_ENC);
@@ -93,12 +74,10 @@ void *worker_thread(void *arg) {
             workers[worker->id+1].qkd_id = next_qkd_id;
             free(response);
         }
-        // printf("[NODE %i]: Cediendo paso a nodo %i\n",worker->id,worker->id+1);
         workers[worker->id+1].ready = 1;
         pthread_cond_signal(&workers[worker->id+1].cond);
         pthread_mutex_unlock(&workers[worker->id+1].mutex);
     } else {
-        // printf("[NODE %i]: Cediendo paso a main\n",worker->id);
         worker->finished = 1;
         pthread_cond_signal(&worker->cond);
         pthread_mutex_unlock(&worker->mutex);
@@ -111,16 +90,13 @@ void *worker_thread(void *arg) {
     worker->ready = 0;
 
     // Decrypt secret and forward.
-
     uint8_t secret[KEY_SIZE];
     xor_encrypt_decrypt(worker->ciphertext, KEY_SIZE, qkd_key, secret);
 
-    // Preparamos info para el próximo nodo
     if(worker->id < NUM_WORKERS-1){
         uint8_t ciphertext[KEY_SIZE];
         xor_encrypt_decrypt(secret, KEY_SIZE, next_qkd_key, ciphertext);
         
-        // printf("[NODE %i]: Cediendo paso a nodo %i\n",worker->id,worker->id+1);
         workers[worker->id+1].ciphertext = ciphertext; 
         workers[worker->id+1].ready = 1;
         pthread_cond_signal(&workers[worker->id+1].cond);
@@ -146,7 +122,6 @@ void *main_thread(void *arg) {
 
     // Read QKD Key from ID from the KMS
     snprintf(url, sizeof(url), "%s/api/v1/keys/%s/enc_keys", KMSM_IP, C2_ENC);
-    // printf("\nLeer clave del nodo maestro (Alice):\n");
     response = request_https(url, C1_PUB_KEY, C1_PRIV_KEY, C1_ROOT_CA, NULL);
     if (response) {
         extract_key8_and_id(response, qkd_key, KEY_SIZE, qkd_id, QKD_KEY_ID);
@@ -205,7 +180,6 @@ int main() {
     FILE *enc_db;
     int first_exec = 1;
 
-    // Abrir db para añadir o crear si no existe
     key_db = fopen(key_db_name, "w");
     enc_db = fopen(enc_db_name, "w");
     if (key_db == NULL) {
