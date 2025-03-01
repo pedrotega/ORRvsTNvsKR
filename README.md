@@ -99,3 +99,9 @@ The foulder `certs` must be created with the necessary certificates to communica
 
 In the absence of QKD nodes, online simulators such as the one provided by [QuKayDee](https://qukaydee.com/pages/getting_started) can be used.
 
+## License
+
+This project is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License (CC-BY-NC-SA 4.0).
+
+For more information, see the full license text at: https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+
