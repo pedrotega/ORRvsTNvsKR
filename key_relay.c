@@ -1,9 +1,10 @@
-// gcc -o key_relay key_relay.c kms/kms.c onion/onion.c -lcurl -ljansson -loqs -lpthread -lssl -lcrypto -lb64
+// gcc -DNUM_WORKERS=5 -DNUM_EXEC=2 -o key_relay key_relay.c kms/kms.c onion/onion.c -lcurl -ljansson -loqs -lpthread -lssl -lcrypto -lb64
 
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <time.h>
 #include <string.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -11,12 +12,6 @@
 #include <oqs/oqs.h>
 #include "kms/kms.h"
 #include "onion/onion.h"
-
-#define NUM_WORKERS 3
-#define NUM_EXEC 100
-
-char *key_db_name = "key_distribution.csv";
-char *enc_db_name = "encryption_time.csv";
 
 clock_t key_init_time, key_end_time;
 clock_t enc_init_time, enc_end_time;
@@ -33,6 +28,14 @@ typedef struct {
 
 WorkerData workers[NUM_WORKERS];
 
+// XOR function to encrypt and decrypt
+void xor_encrypt_decrypt(const uint8_t *input, int input_len, const uint8_t *key, uint8_t *output) {
+    for (int i = 0; i < input_len; i++) {
+        output[i] = input[i] ^ key[i % KEY_SIZE];
+    }
+}
+
+// Represent the onion routers intermediates and destination
 void *worker_thread(void *arg) {
     WorkerData *worker = (WorkerData *)arg;
     uint8_t qkd_key[KEY_SIZE];
@@ -41,6 +44,8 @@ void *worker_thread(void *arg) {
     char url[256];
     char *response;
     char qkd_id[256] = {0};
+
+    // ############ - Initial Syncronization & QKD-KEY Exchange - ############
 
     pthread_mutex_lock(&worker->mutex);    
     while (!worker->ready) {
@@ -55,33 +60,30 @@ void *worker_thread(void *arg) {
     response = request_https(url, C2_PUB_KEY, C2_PRIV_KEY, C2_ROOT_CA, post_data);
     if (response) {
         extract_key8_and_id(response, qkd_key, KEY_SIZE, qkd_id, QKD_KEY_ID);
-        // printf("[NODE %i] - ",worker->id);
-        // print_array_hex("QKDKEY", qkd_key, KEY_SIZE);
-        // printf("[NODE %i] - QKD_ID: %s\n", worker->id,qkd_id);
         free(response);
     }
 
-    // Read QKD Key from the KMS
+    // Read QKD Key from the KMS and prepare information for the next node
     if(worker->id < NUM_WORKERS-1){        
-
         snprintf(url, sizeof(url), "%s/api/v1/keys/%s/enc_keys", KMSM_IP, C2_ENC);
         response = request_https(url, C1_PUB_KEY, C1_PRIV_KEY, C1_ROOT_CA, NULL);
         if (response) {
             extract_key8_and_id(response, next_qkd_key, KEY_SIZE, next_qkd_id, QKD_KEY_ID);
-            // printf("[NODE %i] - ",worker->id);
-            // print_array_hex("QKDKEY", next_qkd_key, KEY_SIZE);
-            // printf("[NODE %i] - QKD_ID: %s\n", worker->id,next_qkd_id);
             workers[worker->id+1].qkd_id = next_qkd_id;
             free(response);
         }
+        // Yield control to the next node
         workers[worker->id+1].ready = 1;
         pthread_cond_signal(&workers[worker->id+1].cond);
         pthread_mutex_unlock(&workers[worker->id+1].mutex);
     } else {
+        // Yield control to initiator node
         worker->finished = 1;
         pthread_cond_signal(&worker->cond);
         pthread_mutex_unlock(&worker->mutex);
     }
+
+    // ######### - Second Syncronization, ENC/DEC secret & Forward - #########
 
     pthread_mutex_lock(&worker->mutex);    
     while (!worker->ready) {
@@ -89,14 +91,15 @@ void *worker_thread(void *arg) {
     }
     worker->ready = 0;
 
-    // Decrypt secret and forward.
     uint8_t secret[KEY_SIZE];
     xor_encrypt_decrypt(worker->ciphertext, KEY_SIZE, qkd_key, secret);
 
+    // Prepare information for the next node
     if(worker->id < NUM_WORKERS-1){
         uint8_t ciphertext[KEY_SIZE];
         xor_encrypt_decrypt(secret, KEY_SIZE, next_qkd_key, ciphertext);
         
+        // Yield control to the next node
         workers[worker->id+1].ciphertext = ciphertext; 
         workers[worker->id+1].ready = 1;
         pthread_cond_signal(&workers[worker->id+1].cond);
@@ -112,6 +115,7 @@ void *worker_thread(void *arg) {
     return NULL;
 }
 
+// Represent the initiator onion router
 void *main_thread(void *arg) {
 
     uint8_t secret[KEY_SIZE];
@@ -120,18 +124,16 @@ void *main_thread(void *arg) {
     char *response;
     char qkd_id[256] = {0};
 
-    // Read QKD Key from ID from the KMS
+    // Read QKD Key from the KMS
     snprintf(url, sizeof(url), "%s/api/v1/keys/%s/enc_keys", KMSM_IP, C2_ENC);
     response = request_https(url, C1_PUB_KEY, C1_PRIV_KEY, C1_ROOT_CA, NULL);
     if (response) {
         extract_key8_and_id(response, qkd_key, KEY_SIZE, qkd_id, QKD_KEY_ID);
-        // printf("[ MAIN ] - ");
-        // print_array_hex("QKDKEY", qkd_key, KEY_SIZE);
-        // printf("[ MAIN ] - QKD_ID: %s\n",qkd_id);
         free(response);
     }
-
     workers[0].qkd_id = qkd_id;
+
+    // ############ - Initial Syncronization & QKD-KEY Exchange - ############
 
     workers[0].ready = 1;
     pthread_cond_signal(&workers[0].cond);
@@ -153,6 +155,8 @@ void *main_thread(void *arg) {
     enc_init_time = clock();
     xor_encrypt_decrypt(secret, KEY_SIZE, qkd_key, ciphertext);
     enc_end_time = clock();
+
+    // ######### - Second Syncronization, ENC/DEC secret & Forward - #########
 
     workers[0].ciphertext = ciphertext;
 
@@ -180,8 +184,8 @@ int main() {
     FILE *enc_db;
     int first_exec = 1;
 
-    key_db = fopen(key_db_name, "w");
-    enc_db = fopen(enc_db_name, "w");
+    key_db = fopen(DB_KEY_DIST, "a");
+    enc_db = fopen(DB_ENC_TIME, "a");
     if (key_db == NULL) {
         printf("Error opening key_db.\n");
         return 1;
@@ -219,20 +223,30 @@ int main() {
 
         key_cpu_time = ((double) (key_end_time - key_init_time));
         enc_cpu_time = ((double) (enc_end_time - enc_init_time));
-        printf("\nKEY CPU_TIME: %.2f us", key_cpu_time);
-        printf("\nENC CPU_TIME: %.2f us\n", enc_cpu_time);
+        printf("\nKEY CPU_TIME: %.0f us", key_cpu_time);
+        printf("\nENC CPU_TIME: %.0f us\n", enc_cpu_time);
 
         if (first_exec) {
-            fprintf(key_db, "KR-%i\n",NUM_WORKERS);
-            fprintf(enc_db, "KR-%i\n",NUM_WORKERS);
+            time_t now = time(NULL);
+            struct tm *t = localtime(&now);
+            char timestamp[64];
+            strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", t);
+
+            fprintf(key_db, "%s,KR-%i,", timestamp, NUM_WORKERS);
+            fprintf(enc_db, "%s,KR-%i,", timestamp, NUM_WORKERS);
             first_exec = 0;
         } 
         
-        fprintf(key_db, "%.2f\n", key_cpu_time);
-        fprintf(enc_db, "%.2f\n", enc_cpu_time);      
+        fprintf(key_db, "%.0f,", key_cpu_time);
+        fprintf(enc_db, "%.0f,", enc_cpu_time);  
         
         num_exec++;
+
+        sleep(WAIT_TIME);
     }
+
+    fprintf(key_db, "\n");
+    fprintf(enc_db, "\n");
 
     fclose(key_db);
     fclose(enc_db);

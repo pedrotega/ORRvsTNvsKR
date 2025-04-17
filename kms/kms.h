@@ -18,12 +18,10 @@ extern const char *C2_ROOT_CA;
 extern const char *C1_ENC;
 extern const char *C2_ENC;
 
-// Función para realizar solicitudes HTTPS
+
 char *request_https(const char *url, const char *cert, const char *key, const char *ca_cert, const char *post_data);
-
-// Función para extraer clave e ID de un JSON
 void extract_key_and_id(const char *json_str, char *key_buffer, size_t key_buffer_len, char *key_id_buffer, size_t key_id_buffer_len);
-
 void extract_key8_and_id(const char *json_str, uint8_t *key_buffer, size_t key_buffer_len, char *key_id_buffer, size_t key_id_buffer_len);
+void print_array_hex(const char *label, uint8_t *array, size_t length);
 
 #endif // KMS_H

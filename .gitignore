@@ -1,5 +1,5 @@
-/kms/certs
-key_relay
-or_relay
-trusted_node
+*.o
 *.csv
+*.pem
+*.out
+*.png

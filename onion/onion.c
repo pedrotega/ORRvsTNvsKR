@@ -5,24 +5,15 @@
 #include <openssl/rand.h>
 #include "onion.h"
 
-int generate_random_B(uint8_t *b_block) {
-    if (!RAND_bytes(b_block, B_SIZE)) {
-        return -1;
+
+int generate_rdm(uint8_t *rdm, int rdm_size) {
+    if (!RAND_bytes(rdm, rdm_size)) {
+        return -1;  // Error generating B
     }
-    return 0;
+    return 0;  // Success
 }
 
-int generate_random_key_iv(uint8_t *key, uint8_t *iv) {
-    if (!RAND_bytes(key, KEY_SIZE)) {
-        return -1; 
-    }
-    if (!RAND_bytes(iv, IV_SIZE)) {
-        return -1;
-    }
-    return 0;
-}
-
-// Encrypt AES-256-CBC
+// Function to encrypt with AES-256-CBC
 int encrypt(const uint8_t *plaintext, int plaintext_len, const uint8_t *key, uint8_t *ciphertext, uint8_t *iv) {
     EVP_CIPHER_CTX *ctx;
     int len, ciphertext_len;
@@ -41,7 +32,7 @@ int encrypt(const uint8_t *plaintext, int plaintext_len, const uint8_t *key, uin
     return ciphertext_len;
 }
 
-// Decrypt AES-256-CBC
+// Function to decrypt with AES-256-CBC
 int decrypt(const uint8_t *ciphertext, int ciphertext_len, const uint8_t *key, uint8_t *plaintext, const uint8_t *iv) {
     EVP_CIPHER_CTX *ctx;
     int len, plaintext_len;
@@ -53,23 +44,9 @@ int decrypt(const uint8_t *ciphertext, int ciphertext_len, const uint8_t *key, u
     if (EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, ciphertext_len) != 1) return -1;
     plaintext_len = len;
 
-    if (EVP_DecryptFinal_ex(ctx, plaintext + len, &len) != 1) return -1;
+    if (EVP_DecryptFinal_ex(ctx, plaintext + len, &len) != 1) return -4;
     plaintext_len += len;
 
     EVP_CIPHER_CTX_free(ctx);
     return plaintext_len;
-}
-
-void xor_encrypt_decrypt(const uint8_t *input, int input_len, const uint8_t *key, uint8_t *output) {
-    for (int i = 0; i < input_len; i++) {
-        output[i] = input[i] ^ key[i % KEY_SIZE];
-    }
-}
-
-void print_array_hex(const char *label, uint8_t *array, size_t length) {
-    printf("%s: ", label);
-    for (size_t i = 0; i < length; i++) {
-        printf("%02X ", array[i]);
-    }
-    printf("\n");
 }
